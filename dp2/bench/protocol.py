@@ -4,7 +4,8 @@ field bootstrap and run metadata. See config, "Benchmark".
 
 Each model writes to C.BENCH_DIR/<model>/, one file per outer fold k
     oof_s<seed>_f<k>.npz  rows, prob: fold k's test rows and their probabilities;
-                          deg_idx, deg_prob: the same on features_degraded.npz rows
+                          deg_idx, deg_prob: the same on features_degraded.npz rows;
+                          emb (seed 0, if the model has one): its representation
     lc_<frac>_f<k>.npz    rows, prob, training on a fraction of the training rows
 so that report.py treats all models alike.
 """

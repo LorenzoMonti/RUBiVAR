@@ -42,11 +42,15 @@ class LCTransformer(nn.Module):
         self.head = nn.Sequential(nn.Linear(d, d), nn.GELU(), nn.Dropout(dropout),
                                   nn.Linear(d, n_cls))
 
-    def forward(self, x, te, band, pad):
+    def embed(self, x, te, band, pad):
+        """The curve's representation: token states averaged over its observations."""
         h = self.inp(x) + self.band(band) + self.time(te)
         h = self.norm(self.enc(h, src_key_padding_mask=pad))
         keep = (~pad).unsqueeze(-1).float()
-        return self.head((h * keep).sum(1) / keep.sum(1).clamp(min=1))
+        return (h * keep).sum(1) / keep.sum(1).clamp(min=1)
+
+    def forward(self, x, te, band, pad):
+        return self.head(self.embed(x, te, band, pad))
 
 
 def space(trial):
@@ -63,14 +67,16 @@ def _loader(ds, batch, shuffle=False):
                       collate_fn=sequences.collate)
 
 
-def _predict(model, loader):
+def _predict(model, loader, embed=False):
+    """Class probabilities, or with embed=True the pooled representation."""
     dev = next(model.parameters()).device
     model.eval()
     out = []
     with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
         for x, te, band, pad, _ in loader:
-            logits = model(x.to(dev), te.to(dev), band.to(dev), pad.to(dev))
-            out.append(torch.softmax(logits.float(), 1).cpu().numpy())
+            args = x.to(dev), te.to(dev), band.to(dev), pad.to(dev)
+            out.append(model.embed(*args).float().cpu().numpy() if embed
+                       else torch.softmax(model(*args).float(), 1).cpu().numpy())
     return np.concatenate(out)
 
 
@@ -122,6 +128,10 @@ def train(d, tr, va, params, seed):
 
 def predict(model, d, rows):
     return _predict(model, _loader(sequences.Curves(_cache(), rows, d.y[rows]), 256))
+
+
+def embed(model, d, rows):
+    return _predict(model, _loader(sequences.Curves(_cache(), rows, d.y[rows]), 256), True)
 
 
 def predict_degraded(model, d, idx):

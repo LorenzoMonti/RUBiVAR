@@ -288,6 +288,11 @@ def predict(model, d, rows):
     return model.proba(fold[rows], raw[rows])
 
 
+def embed(model, d, rows):
+    fold, raw = _inputs(d)
+    return model.latent(fold[rows], raw[rows])
+
+
 def predict_degraded(model, d, idx):
     fold, raw = degrade.load_folded()
     return model.proba(fold[idx], raw[idx])

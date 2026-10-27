@@ -9,6 +9,8 @@ A model module provides
     train(d, tr, va, params, seed)    → fitted model
     predict(model, d, rows)           → (len(rows), n_classes) probabilities
     predict_degraded(model, d, idx)   → same, on rows idx of features_degraded.npz
+    embed(model, d, rows)             optional: the model's representation of the rows,
+                                      saved for seed 0 (latent figures, period probe)
 
     tune(module, k)            Optuna on fold k's inner split; resumable, one journal
                                per fold, so folds can run as parallel jobs
@@ -105,8 +107,10 @@ def evaluate(module, seeds=C.BENCH_SEEDS, folds=range(C.N_FIELD_FOLDS)):
             idx = np.where(d.folds[deg_rows] == k)[0]   # none in fold 0: no bulge object
             deg = (module.predict_degraded(model, d, idx) if len(idx)   # has 18 nights
                    else np.zeros((0, len(d.cls))))
+            extra = ({"emb": module.embed(model, d, te)}
+                     if seed == seeds[0] and hasattr(module, "embed") else {})
             _save(module.NAME, f"oof_s{seed}_f{k}.npz", rows=te,
-                  prob=module.predict(model, d, te), deg_idx=idx, deg_prob=deg)
+                  prob=module.predict(model, d, te), deg_idx=idx, deg_prob=deg, **extra)
             print(f"[{module.NAME} seed {seed}] fold {k} done ({time.time() - t0:.0f}s)",
                   flush=True)
     _save_meta(module, "evaluate", seeds=list(seeds), folds=list(folds), params=params)
