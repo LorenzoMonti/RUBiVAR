@@ -2,12 +2,15 @@
 Gradient-boosted trees (sklearn HistGradientBoosting) on the 460 classical + dm-dt
 features — the ML entry of the benchmark. The period comes in through the features
 (LS period, Fourier fit on it); that is the point of comparison with the transformer.
+
+`view` restricts the trees to another input, for the representation ablations
+(hgb_classic.py, hgb_dmdt.py): a function of (feature rows, their TAB_COLUMNS).
 """
 
 import numpy as np
 from sklearn.ensemble import HistGradientBoostingClassifier
 
-from bench import degrade
+from bench import degrade, vae
 
 NAME = "hgb"
 USES_VAL = False
@@ -25,10 +28,15 @@ def space(trial):
             "max_features": trial.suggest_float("max_features", 0.2, 1.0)}
 
 
-def train(d, tr, va, params, seed):
+def _x(view, x, tab):
+    return x if view is None else view(x, tab())
+
+
+def train(d, tr, va, params, seed, view=None):
+    x = _x(view, d.x[tr], lambda: vae._inputs(d)[2][tr])
     model = HistGradientBoostingClassifier(**params, class_weight="balanced",
-                                           random_state=seed).fit(d.x[tr], d.y[tr])
-    model.n_cls = len(d.cls)
+                                           random_state=seed).fit(x, d.y[tr])
+    model.n_cls, model.view = len(d.cls), view
     return model
 
 
@@ -39,11 +47,11 @@ def _proba(model, x):
 
 
 def predict(model, d, rows):
-    return _proba(model, d.x[rows])
+    return _proba(model, _x(model.view, d.x[rows], lambda: vae._inputs(d)[2][rows]))
 
 
 def predict_degraded(model, d, idx):
     global _DEG
     if _DEG is None:
         _DEG = degrade.load()[0]
-    return _proba(model, _DEG[idx])
+    return _proba(model, _x(model.view, _DEG[idx], lambda: degrade.load_folded()[1][idx]))

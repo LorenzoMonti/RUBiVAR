@@ -80,7 +80,7 @@ python main.py features                 # classical features + dm–dt
 python main.py classify                 # classifier, held-out fields
 python main.py all                      # the five stages in order
 
-# benchmark, same protocol for the three models (M = hgb | transformer | vae)
+# benchmark, same protocol for every model (M = hgb | hgb_classic | hgb_dmdt | transformer | vae | vae_hgb | mlp_dmdt)
 python main.py bench-cache                         # sequences + first-n-nights features
 python main.py bench --model M --step tune         # Optuna on inner validation fields
 python main.py bench --model M --step eval         # tests 1-2: held-out fields, first n nights

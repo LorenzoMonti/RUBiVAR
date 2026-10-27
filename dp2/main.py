@@ -64,7 +64,7 @@ def stage_classify(args):
     classify.run(no_plot=args.no_plot)
 
 
-BENCH_MODELS = ("hgb", "transformer", "vae", "vae_hgb")
+BENCH_MODELS = ("hgb", "hgb_classic", "hgb_dmdt", "transformer", "vae", "vae_hgb", "mlp_dmdt")
 
 
 def stage_bench_cache(args):

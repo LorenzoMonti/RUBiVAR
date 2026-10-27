@@ -12,6 +12,8 @@ C.MIN_CLASS_SIZE members) and the unlabelled objects outside the test and valida
 fields. A head on the latent mean then gives the 5 class probabilities: a logistic
 regression here (what a linear model can read from the latent), gradient-boosted
 trees in vae_hgb.py (what the latent holds), both with the parameters tuned here.
+generative=False drops the ELBO, hence the decoder and the unlabelled objects: the same
+encoder, SupCon and head, purely discriminative (mlp_dmdt.py).
 """
 
 import numpy as np
@@ -181,7 +183,7 @@ class _Model:
         return out
 
 
-def train(d, tr, va, params, seed, head=None):
+def train(d, tr, va, params, seed, head=None, generative=True):
     torch.manual_seed(seed)
     rng = np.random.default_rng(seed)
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -189,12 +191,12 @@ def train(d, tr, va, params, seed, head=None):
     test_fold = sorted(set(range(C.N_FIELD_FOLDS)) - set(d.folds[tr]) - set(d.folds[va]))
     unl = np.where(~d.lab & ~np.isin(d.folds, test_fold)
                    & ~np.isin(d.fields, np.unique(d.fields[va])))[0]
-    rows = np.concatenate([tr, unl])
+    rows = np.concatenate([tr, unl]) if generative else tr
 
     # SupCon labels: fine-grained labels of the training rows, large enough classes
     names, counts = np.unique(d.labels[tr].astype(str), return_counts=True)
     keep = {n: i for i, n in enumerate(names[counts >= C.MIN_CLASS_SIZE])}
-    sc_y = np.array([keep.get(str(l), -1) for l in d.labels[tr]] + [-1] * len(unl))
+    sc_y = np.array([keep.get(str(l), -1) for l in d.labels[tr]] + [-1] * (len(rows) - len(tr)))
 
     tab, stats = _tab(raw[rows])
     x, m, t = _t(maps[rows], dev), _t(mask[rows], dev), _t(tab, dev)
@@ -204,14 +206,18 @@ def train(d, tr, va, params, seed, head=None):
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=EPOCHS, eta_min=1e-5)
     b_end, l_end = BETA_WARM * EPOCHS, (BETA_WARM + LAMBDA_WARM) * EPOCHS
     for ep in range(1, EPOCHS + 1):
-        beta = params["beta_max"] * min(1.0, ep / b_end)
-        lam = params["lambda_max"] * float(np.clip((ep - b_end) / (l_end - b_end), 0, 1))
+        beta = params.get("beta_max", 0.0) * min(1.0, ep / b_end)
+        lam = params.get("lambda_max", 0.0) * float(np.clip((ep - b_end) / (l_end - b_end), 0, 1))
         vae.train()
         for b in np.array_split(rng.permutation(len(rows)), max(1, len(rows) // BATCH)):
             b = torch.from_numpy(b).to(dev)
-            logits, tab_recon, mu, logvar = vae(x[b], m[b], t[b])
-            loss = vae_loss(logits, tab_recon, x[b], m[b], t[b], mu, logvar, beta)
-            if lam > 0:
+            if not generative:   # SupCon alone from the first epoch
+                mu = vae.encode(x[b], m[b], t[b])[0]
+                loss = supcon_loss(F.normalize(mu, dim=1), sc_y[b], params["temp"])
+            else:
+                logits, tab_recon, mu, logvar = vae(x[b], m[b], t[b])
+                loss = vae_loss(logits, tab_recon, x[b], m[b], t[b], mu, logvar, beta)
+            if generative and lam > 0:
                 loss = loss + lam * supcon_loss(F.normalize(mu, dim=1), sc_y[b], params["temp"])
             opt.zero_grad(set_to_none=True)
             loss.backward()
