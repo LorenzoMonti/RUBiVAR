@@ -10,7 +10,7 @@ import pandas as pd
 import numpy as np
 from collections import Counter
 
-BASE = "/home/monti/LSST/VariAE"
+BASE = os.path.dirname(os.path.abspath(__file__))
 LC_DIR = os.path.join(BASE, "lc_strict")
 LC_GENTLE_DIR = os.path.join(BASE, "lc_gentle")
 XMATCH_DIR = os.path.join(BASE, "crossmatch")

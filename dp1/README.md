@@ -1,3 +1,24 @@
+> **ARCHIVIO CONGELATO — LSST DP1.**
+> Il lavoro attivo è su DP2, in `../dp2/`. Questa cartella conserva la pipeline DP1
+> completa (codice + dati + risultati) come riferimento; non va modificata.
+>
+> **Stato all'ultimo run (28 maggio 2026):**
+> - `step4_ssvae.py` si interrompe con `NameError: lab_oids` nel diagnostico dei
+>   centroidi (ultima riga di `main()`), *dopo* aver salvato latenti e UMAP.
+> - `latent/ssvae_labeled_index.csv` è quindi disallineato dal codice: contiene 322
+>   oggetti con le 10 classi del Gaia classifier, mentre lo script attuale scrive
+>   325 oggetti da `catalogue_labeled.csv` (RR/ECL/LPV/Ceph).
+> - `results/` risale al 26 maggio: i numeri (725 labeled, 53 RRL, AUC-ROC 0.914)
+>   vengono dalla pipeline *precedente* al crossmatch Gaia posizionale.
+>   `step5a`/`step5b` nella forma attuale non sono mai stati eseguiti.
+> - `folded_labeled/` (171 fold con periodo Gaia, da `step3d`) non è usato:
+>   `build_period_table.py` usa il periodo LS per tutti gli oggetti.
+>
+> `BASE` in tutti gli script è ora derivato da `__file__`, quindi la cartella
+> resta eseguibile ovunque venga spostata.
+
+---
+
 # VariAE — Semi-supervised latent learning for LSST variable star classification
 
 Semi-supervised classification of variable stars from LSST DP1.

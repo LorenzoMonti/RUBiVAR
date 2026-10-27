@@ -14,7 +14,7 @@ from astropy.timeseries import LombScargle
 from multiprocessing import Pool, cpu_count
 from tqdm import tqdm
 
-BASE        = "/home/monti/LSST/VariAE"
+BASE        = os.path.dirname(os.path.abspath(__file__))
 LC_DIR      = os.path.join(BASE, "lc_strict")
 FOLDED_DIR  = os.path.join(BASE, "folded_strict")
 PERIODS_DIR = os.path.join(BASE, "periods")

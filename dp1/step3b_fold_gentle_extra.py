@@ -18,7 +18,7 @@ from tqdm import tqdm
 
 from step3_lomb_scargle import BANDS, BAND_IDX, N_PHASE, phase_fold_band, normalize_band
 
-BASE              = "/home/monti/LSST/VariAE"
+BASE              = os.path.dirname(os.path.abspath(__file__))
 LC_STRICT_DIR     = os.path.join(BASE, "lc_strict")
 LC_GENTLE_DIR     = os.path.join(BASE, "lc_gentle")
 FOLDED_EXTRA_DIR  = os.path.join(BASE, "folded_gentle_extra")

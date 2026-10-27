@@ -217,13 +217,30 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+# ── Admin / non-project material (CV, bandi, report INAF) ─────────────────────
+_admin/
+
 # ── Project data (large files — not versioned) ────────────────────────────────
+# I pattern senza slash iniziale valgono a qualsiasi profondità: coprono sia
+# dp1/ che dp2/.
 lc_strict/
+lightcurves/
+folded/
 lc_gentle/
+lc_xmatch/
 folded_strict/
 folded_gentle_extra/
+folded_xmatch/
+folded_labeled/
 latent/
+models/
 results/
 periods/
 crossmatch/
 catalogs/
+gaia_periods.csv
+
+# ── Local / third-party material ──────────────────────────────────────────────
+/*.pdf
+logs/
+.claude/
