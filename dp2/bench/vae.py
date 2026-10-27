@@ -1,32 +1,38 @@
 """
-Semi-supervised VAE (SS-VAE) + linear probe — the generative entry of the
-benchmark. Input: the phase fold on the LS period (6 bands + mask) and TAB_COLUMNS
-(period, LS power, colours, r amplitude; no Gaia quantity).
+Semi-supervised VAE (SS-VAE) on dm-dt maps — the generative entry of the benchmark.
+Input: the 4 coarse dm-dt maps of features.py (all bands, g, r, i; 5 dt rows x 17 dm
+bins, each row a distribution over dm) and TAB_COLUMNS (period, LS power, colours,
+r amplitude; no Gaia quantity). The maps need no period: the LS period is wrong for
+69% of labelled RR Lyrae (vs Gaia DR3), and a VAE on the phase fold reached RR
+AUC-PR 0.17 on held-out fields while trees on its own tabular inputs reached 0.49.
 
 Per outer fold the VAE is retrained from scratch on the training fields only: their
 labelled objects (SupCon on the original fine-grained labels, classes with >=
 C.MIN_CLASS_SIZE members) and the unlabelled objects outside the test and validation
-fields. A logistic regression on the latent mean then gives the 5 class probabilities:
-the latent is judged by what a linear model can read from it.
+fields. A head on the latent mean then gives the 5 class probabilities: a logistic
+regression here (what a linear model can read from the latent), gradient-boosted
+trees in vae_hgb.py (what the latent holds), both with the parameters tuned here.
 """
-
-import os
 
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 
 import config as C
+import features
 from bench import degrade
 
 NAME = "vae"
+HEAD = "linear"
 USES_VAL = False
-EPOCHS, BATCH = 100, 256
+EPOCHS, BATCH, HIDDEN = 100, 256, 256
 BETA_WARM, LAMBDA_WARM = 0.25, 0.4   # fractions of EPOCHS: KL warm-up, then SupCon's
+N_ROWS, N_DM = len(C.DMDT_MAPS) * len(C.DMDT_DT_GROUPS), len(C.DMDT_DM_EDGES) - 1
 TAB_DIM = len(degrade.TAB_COLUMNS) + 1
 _IN = None
 DEFAULT = {"latent_dim": 32, "lr": 1e-3, "beta_max": 1.0, "lambda_max": 10.0, "temp": 0.07,
@@ -35,120 +41,53 @@ DEFAULT = {"latent_dim": 32, "lr": 1e-3, "beta_max": 1.0, "lambda_max": 10.0, "t
 
 # ── Model ─────────────────────────────────────────────────────────────────────
 
-class Encoder(nn.Module):
+class SSVAE(nn.Module):
     """
-    Input is 2 x len(BANDS) channels: the folded flux, then the observation mask.
-
-    The mask has to be an input, not just a term in the loss. Each band is normalised
-    to zero mean, so a zero in the flux channel means both "no measurement here" and
-    "flux at the band average" — indistinguishable. With RR Lyrae filling only about a
-    third of their phase bins, the encoder would otherwise read a flat curve at the
-    mean across most of the fold. The mask channel tells it which is which.
+    MLP encoder / decoder. The encoder also reads which dt rows were empty (never
+    sampled at that time scale): an empty row is filled with the population mean, so
+    without the mask it would look like a typical star. The decoder gives logits per
+    dt row (a distribution over dm) and, from its own head, the tabular vector —
+    without that head nothing forces period and colours through to the latent.
     """
 
     def __init__(self, latent_dim, tab_dim):
         super().__init__()
-        n_in = 2 * len(C.BANDS)
-        # padding_mode="circular": phase 1.0 wraps onto phase 0.0, so the fold has no
-        # edge — zero-padding would invent one and break the translation equivariance
-        # that makes a CNN the right choice for an arbitrary phase origin.
-        self.conv = nn.Sequential(
-            nn.Conv1d(n_in, 32, 5, padding=2, padding_mode="circular"),
-            nn.BatchNorm1d(32), nn.GELU(),
-            nn.Conv1d(32, 64, 5, padding=2, stride=2, padding_mode="circular"),
-            nn.BatchNorm1d(64), nn.GELU(),
-            nn.Conv1d(64, 128, 5, padding=2, stride=2, padding_mode="circular"),
-            nn.BatchNorm1d(128), nn.GELU(),
-        )
-        # Measured, not derived from a formula: two stride-2 stages do not divide
-        # every N_PHASE evenly, and guessing N_PHASE // 4 breaks for e.g. 50.
-        with torch.no_grad():
-            self.conv_len = self.conv(torch.zeros(1, n_in, C.N_PHASE)).shape[-1]
-        self.flat_dim = 128 * self.conv_len
-        self.fc_cnn = nn.Sequential(nn.Linear(self.flat_dim, 256), nn.GELU())
-        self.fc_tab = nn.Sequential(nn.Linear(tab_dim, 32), nn.GELU())
-        self.fc_mu = nn.Linear(256 + 32, latent_dim)
-        self.fc_lv = nn.Linear(256 + 32, latent_dim)
+        n_in = N_ROWS * N_DM + N_ROWS + tab_dim
+        self.enc = nn.Sequential(nn.Linear(n_in, HIDDEN), nn.GELU(),
+                                 nn.Linear(HIDDEN, HIDDEN), nn.GELU())
+        self.fc_mu = nn.Linear(HIDDEN, latent_dim)
+        self.fc_lv = nn.Linear(HIDDEN, latent_dim)
+        self.dec = nn.Sequential(nn.Linear(latent_dim, HIDDEN), nn.GELU(),
+                                 nn.Linear(HIDDEN, HIDDEN), nn.GELU(),
+                                 nn.Linear(HIDDEN, N_ROWS * N_DM))
+        self.dec_tab = nn.Sequential(nn.Linear(latent_dim, 64), nn.GELU(),
+                                     nn.Linear(64, tab_dim))
 
-    def forward(self, x, mask, tab):
-        h_cnn = self.conv(torch.cat([x, mask], dim=1)).flatten(1)
-        h = torch.cat([self.fc_cnn(h_cnn), self.fc_tab(tab)], dim=1)
+    def encode(self, x, mask, tab):
+        h = self.enc(torch.cat([x.flatten(1), mask, tab], 1))
         return self.fc_mu(h), self.fc_lv(h)
 
-
-class Decoder(nn.Module):
-    def __init__(self, latent_dim, seq_len):
-        super().__init__()
-        self.seq_len = seq_len
-        self.fc = nn.Sequential(
-            nn.Linear(latent_dim, 256), nn.GELU(),
-            nn.Linear(256, 128 * self.seq_len), nn.GELU(),
-        )
-        # ConvTranspose1d supports only zero padding in PyTorch, so the decoder cannot
-        # be made circular. It matters far less: the latent is built by the encoder,
-        # and the decoder only has to reconstruct well enough to shape it.
-        # A second head reconstructs the tabular vector. Without it nothing forces
-        # period, colours and ls_power through to the latent: they enter the encoder
-        # but are never reconstructed, so the ELBO has no reason to preserve them and
-        # the 256-dim CNN branch drowns the 32-dim tabular branch.
-        self.fc_tab_out = None    # set by SSVAE, which knows tab_dim
-        self.dconv = nn.Sequential(
-            nn.ConvTranspose1d(128, 64, 5, padding=2, stride=2, output_padding=1),
-            nn.BatchNorm1d(64), nn.GELU(),
-            nn.ConvTranspose1d(64, 32, 5, padding=2, stride=2, output_padding=1),
-            nn.BatchNorm1d(32), nn.GELU(),
-            nn.ConvTranspose1d(32, len(C.BANDS), 5, padding=2),
-        )
-
-    def forward(self, z):
-        out = self.dconv(self.fc(z).view(-1, 128, self.seq_len))
-        # Two stride-2 stages give 4 * seq_len, which can overshoot N_PHASE when it
-        # is not a multiple of 4 (50 → 52). Trim rather than constrain N_PHASE.
-        return out[..., :C.N_PHASE], self.fc_tab_out(z)
-
-
-class SSVAE(nn.Module):
-    def __init__(self, latent_dim, tab_dim):
-        super().__init__()
-        self.encoder = Encoder(latent_dim, tab_dim)
-        self.decoder = Decoder(latent_dim, self.encoder.conv_len)
-        self.decoder.fc_tab_out = nn.Sequential(
-            nn.Linear(latent_dim, 64), nn.GELU(), nn.Linear(64, tab_dim))
-
-    def reparameterize(self, mu, logvar):
-        return mu + torch.exp(0.5 * logvar) * torch.randn_like(mu)
-
     def forward(self, x, mask, tab):
-        mu, logvar = self.encoder(x, mask, tab)
-        recon, tab_recon = self.decoder(self.reparameterize(mu, logvar))
-        return recon, tab_recon, mu, logvar
+        mu, logvar = self.encode(x, mask, tab)
+        z = mu + torch.exp(0.5 * logvar) * torch.randn_like(mu)
+        return self.dec(z).view(-1, N_ROWS, N_DM), self.dec_tab(z), mu, logvar
 
 
 # ── Losses ────────────────────────────────────────────────────────────────────
 
-def vae_loss(recon, tab_recon, x, mask, tab, mu, logvar, beta):
+def vae_loss(logits, tab_recon, x, mask, tab, mu, logvar, beta):
     """
-    Masked ELBO. Bands with no data must not be fitted to zero, hence the mask.
-
-    The reconstruction is summed over the tensor's elements, not averaged over them.
-    Averaging silently rescales beta by the number of elements (6 x N_PHASE = 300):
-    an apparently mild beta=0.1 then acts like beta=30, the KL term outweighs the
-    reconstruction several times over and the encoder collapses to the prior — a
-    latent of isotropic noise, variance spread evenly over all 32 dimensions.
-
-    Each object is normalised by its OWN valid-element count and then rescaled to the
-    full tensor, so objects observed in three bands weigh the same as those observed
-    in six instead of contributing proportionally less gradient.
+    Masked ELBO. Each sampled dt row is a distribution over dm, reconstructed by
+    cross-entropy; empty rows are not fitted. The reconstruction is summed over rows,
+    not averaged (averaging would silently rescale beta), with each object normalised
+    by its own number of sampled rows so that sparse curves weigh like dense ones.
     """
-    n_elem = x.shape[1] * x.shape[2]
-    per_obj = mask.sum(dim=[1, 2]).clamp(min=1)
-    recon_per_elem = ((recon - x) ** 2 * mask).sum(dim=[1, 2]) / per_obj
-    recon_loss = (recon_per_elem * n_elem).mean()
+    ce = -(x * F.log_softmax(logits, -1)).sum(-1)                      # (B, N_ROWS)
+    per_obj = (ce * mask).sum(1) / mask.sum(1).clamp(min=1)
+    recon = (per_obj * N_ROWS).mean()
     kl = (-0.5 * (1 + logvar - mu.pow(2) - logvar.exp())).clamp(min=C.FREE_BITS).sum(1).mean()
     tab_loss = ((tab_recon - tab) ** 2).sum(1).mean()
-    total = recon_loss + C.TAB_RECON_WEIGHT * tab_loss + beta * kl
-    # recon_per_elem is what gets reported: comparable across runs and N_PHASE values.
-    return total, recon_per_elem.mean(), kl, tab_loss
+    return recon + C.TAB_RECON_WEIGHT * tab_loss + beta * kl
 
 
 def supcon_loss(features, labels, temp):
@@ -190,17 +129,21 @@ def space(trial):
             "C": trial.suggest_float("C", 1e-2, 10.0, log=True)}
 
 
+def _maps(x):
+    """dm-dt block of feature rows → (maps (n, N_ROWS, N_DM), sampled-row mask (n, N_ROWS))."""
+    dm_mean = np.load(C.FEATURES_NPZ)["dmdt_mean"].reshape(N_ROWS, N_DM)
+    maps = x[:, -N_ROWS * N_DM:].reshape(-1, N_ROWS, N_DM).astype(np.float32)
+    # empty rows were filled with the population mean by features.py
+    return maps, (~np.all(maps == dm_mean, axis=2)).astype(np.float32)
+
+
 def _inputs(d):
-    """(fold, raw tab) of every object, in d's order; NaN fold where none was written."""
+    """(maps, mask, raw tab) of every object, in d's order."""
     global _IN
     if _IN is None:
-        fold = np.full((len(d.ids), len(C.BANDS), C.N_PHASE), np.nan, np.float32)
-        for i, oid in enumerate(d.ids):
-            path = os.path.join(C.FOLDED_DIR, f"folded_{oid}.npy")
-            if os.path.exists(path):
-                fold[i] = np.load(path)
+        assert d.names[-N_ROWS * N_DM:] == features.dmdt_names()   # maps x dt row x dm bin
         per = pd.read_csv(C.PERIODS_CSV, dtype={"diaObjectId": str}).set_index("diaObjectId")
-        _IN = fold, per.reindex(d.ids)[degrade.TAB_COLUMNS].to_numpy(np.float64)
+        _IN = (*_maps(d.x), per.reindex(d.ids)[degrade.TAB_COLUMNS].to_numpy(np.float64))
     return _IN
 
 
@@ -214,35 +157,35 @@ def _tab(raw, stats=None):
     return np.hstack([z, np.isnan(t[:, 2:]).mean(1, keepdims=True)]).astype(np.float32), stats
 
 
-def _tensors(fold, tab, dev):
-    mask = ~np.isnan(fold)
-    return (torch.from_numpy(np.where(mask, fold, 0).astype(np.float32)).to(dev),
-            torch.from_numpy(mask.astype(np.float32)).to(dev), torch.from_numpy(tab).to(dev))
+def _t(a, dev):
+    return torch.from_numpy(np.ascontiguousarray(a, np.float32)).to(dev)
 
 
 class _Model:
-    def __init__(self, vae, stats, scaler, probe, n_cls):
-        self.vae, self.stats, self.scaler, self.probe, self.n_cls = vae, stats, scaler, probe, n_cls
+    def __init__(self, vae, stats, n_cls):
+        self.vae, self.stats, self.n_cls = vae, stats, n_cls
+        self.scaler = self.head = None
 
     @torch.no_grad()
-    def latent(self, fold, raw_tab):
+    def latent(self, maps, mask, raw_tab):
         self.vae.eval()
-        x, m, t = _tensors(fold, _tab(raw_tab, self.stats)[0], next(self.vae.parameters()).device)
-        return np.vstack([self.vae.encoder(x[i:i + 2048], m[i:i + 2048], t[i:i + 2048])[0]
-                          .cpu().numpy() for i in range(0, len(x), 2048)])
+        dev = next(self.vae.parameters()).device
+        x, m, t = _t(maps, dev), _t(mask, dev), _t(_tab(raw_tab, self.stats)[0], dev)
+        return np.vstack([self.vae.encode(x[i:i + 4096], m[i:i + 4096], t[i:i + 4096])[0]
+                          .cpu().numpy() for i in range(0, len(x), 4096)])
 
-    def proba(self, fold, raw_tab):
-        out = np.zeros((len(fold), self.n_cls))
-        out[:, self.probe.classes_] = self.probe.predict_proba(
-            self.scaler.transform(self.latent(fold, raw_tab)))
+    def proba(self, maps, mask, raw_tab):
+        out = np.zeros((len(maps), self.n_cls))
+        z = self.scaler.transform(self.latent(maps, mask, raw_tab))
+        out[:, self.head.classes_] = self.head.predict_proba(z)
         return out
 
 
-def train(d, tr, va, params, seed):
+def train(d, tr, va, params, seed, head=None):
     torch.manual_seed(seed)
     rng = np.random.default_rng(seed)
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    fold, raw = _inputs(d)
+    maps, mask, raw = _inputs(d)
     test_fold = sorted(set(range(C.N_FIELD_FOLDS)) - set(d.folds[tr]) - set(d.folds[va]))
     unl = np.where(~d.lab & ~np.isin(d.folds, test_fold)
                    & ~np.isin(d.fields, np.unique(d.fields[va])))[0]
@@ -254,7 +197,7 @@ def train(d, tr, va, params, seed):
     sc_y = np.array([keep.get(str(l), -1) for l in d.labels[tr]] + [-1] * len(unl))
 
     tab, stats = _tab(raw[rows])
-    x, m, t = _tensors(fold[rows], tab, dev)
+    x, m, t = _t(maps[rows], dev), _t(mask[rows], dev), _t(tab, dev)
     sc_y = torch.from_numpy(sc_y).to(dev)
     vae = SSVAE(params["latent_dim"], TAB_DIM).to(dev)
     opt = torch.optim.AdamW(vae.parameters(), lr=params["lr"], weight_decay=C.WEIGHT_DECAY)
@@ -266,35 +209,40 @@ def train(d, tr, va, params, seed):
         vae.train()
         for b in np.array_split(rng.permutation(len(rows)), max(1, len(rows) // BATCH)):
             b = torch.from_numpy(b).to(dev)
-            recon, tab_recon, mu, logvar = vae(x[b], m[b], t[b])
-            loss = vae_loss(recon, tab_recon, x[b], m[b], t[b], mu, logvar, beta)[0]
+            logits, tab_recon, mu, logvar = vae(x[b], m[b], t[b])
+            loss = vae_loss(logits, tab_recon, x[b], m[b], t[b], mu, logvar, beta)
             if lam > 0:
-                loss = loss + lam * supcon_loss(F.normalize(mu, dim=1), sc_y[b],
-                                                      params["temp"])
+                loss = loss + lam * supcon_loss(F.normalize(mu, dim=1), sc_y[b], params["temp"])
             opt.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(vae.parameters(), C.GRAD_CLIP)
             opt.step()
         sched.step()
 
-    model = _Model(vae, stats, None, None, len(d.cls))
-    z = model.latent(fold[tr], raw[tr])
+    model = _Model(vae, stats, len(d.cls))
+    z = model.latent(maps[tr], mask[tr], raw[tr])
     model.scaler = StandardScaler().fit(z)
-    model.probe = LogisticRegression(C=params["C"], class_weight="balanced", max_iter=2000,
-                                     random_state=seed).fit(model.scaler.transform(z), d.y[tr])
+    if (head or HEAD) == "linear":
+        model.head = LogisticRegression(C=params["C"], class_weight="balanced", max_iter=2000,
+                                        random_state=seed)
+    else:
+        model.head = HistGradientBoostingClassifier(
+            max_iter=C.HGB_MAX_ITER, learning_rate=C.HGB_LR, class_weight="balanced",
+            random_state=seed)
+    model.head.fit(model.scaler.transform(z), d.y[tr])
     return model
 
 
 def predict(model, d, rows):
-    fold, raw = _inputs(d)
-    return model.proba(fold[rows], raw[rows])
+    maps, mask, raw = _inputs(d)
+    return model.proba(maps[rows], mask[rows], raw[rows])
 
 
 def embed(model, d, rows):
-    fold, raw = _inputs(d)
-    return model.latent(fold[rows], raw[rows])
+    maps, mask, raw = _inputs(d)
+    return model.latent(maps[rows], mask[rows], raw[rows])
 
 
 def predict_degraded(model, d, idx):
-    fold, raw = degrade.load_folded()
-    return model.proba(fold[idx], raw[idx])
+    x = degrade.load()[0][idx]
+    return model.proba(*_maps(x), degrade.load_folded()[1][idx])

@@ -4,6 +4,7 @@ Tuning and scoring, the same for every model.
 A model module provides
     NAME                    output folder under C.BENCH_DIR
     DEFAULT                 untuned params, the first trial of every study
+    STUDY                   optional: tuned params taken from this model's study
     USES_VAL                True if training needs the validation rows (early stopping);
                             otherwise the final fit takes all of fold k's training rows
     space(trial)            Optuna search space → params dict
@@ -35,9 +36,10 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)   # trials are printed by t
 
 
 def _study(module, k):
-    path = os.path.join(protocol.model_dir(module.NAME), f"hpo_fold{k}.journal")
+    name = getattr(module, "STUDY", module.NAME)   # a module can reuse another's tuning
+    path = os.path.join(protocol.model_dir(name), f"hpo_fold{k}.journal")
     return optuna.create_study(
-        study_name=f"{module.NAME}_fold{k}", direction="maximize", load_if_exists=True,
+        study_name=f"{name}_fold{k}", direction="maximize", load_if_exists=True,
         storage=JournalStorage(JournalFileBackend(path)),
         sampler=optuna.samplers.TPESampler(seed=C.RANDOM_SEED + k))
 
@@ -146,7 +148,9 @@ def learning_curve(module, fracs=C.LC_FRACTIONS, folds=range(C.N_FIELD_FOLDS)):
 
 
 def _save_meta(module, step, **extra):
-    protocol.save_json(os.path.join(protocol.model_dir(module.NAME), f"meta_{step}.json"),
+    folds = "".join(map(str, extra.get("folds", [])))   # one file per job of an array
+    path = os.path.join(protocol.model_dir(module.NAME), f"meta_{step}_f{folds}.json")
+    protocol.save_json(path,
                        protocol.run_meta(model=module.NAME, step=step,
                                          trials=C.BENCH_TRIALS, **extra))
 
