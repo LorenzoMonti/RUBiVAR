@@ -14,127 +14,137 @@ semi-supervised VAE (generative) under one protocol (`dp2/bench/`).
 
 ```
 RUBiVAR/
-├── dp1/        # DP1 — archivio congelato (pipeline completa, codice + dati + risultati)
-├── dp2/        # DP2 — lavoro attivo
-│   └── catalogs/   # cataloghi di crossmatch Gaia DR3 × LSST DP2
+├── dp1/        # DP1 — frozen archive (complete pipeline code)
+├── dp2/        # DP2 — active work
 ├── requirements.txt
 └── LICENSE
 ```
 
-Ogni release ha il proprio albero autoconsistente: script, dati e risultati stanno insieme.
-`BASE` negli script è derivato da `__file__`, quindi ogni cartella è eseguibile in loco senza
-path assoluti.
+Each data release has its own self-contained tree. `BASE` in the scripts is derived from
+`__file__`, so each folder runs in place without absolute paths.
 
 ---
 
-## DP1 — archivio (`dp1/`)
+## DP1 — archive (`dp1/`)
 
-Prima iterazione completa su LSST DP1: 13.505 curve di luce `strict`, crossmatch Gaia DR3
-(SOS + match posizionale 2″ + classifier), 392 oggetti etichettati, SS-VAE a 32 dimensioni,
-classificatore binario RR e multiclasse sul latente.
+First complete iteration on LSST DP1: 13,505 `strict` light curves, Gaia DR3 crossmatch
+(SOS + 2″ positional match + classifier), 392 labelled objects, a 32-dimensional SS-VAE,
+and binary RR and multiclass classifiers on the latent space.
 
-Vedi `dp1/README.md` per la pipeline, i risultati e lo stato preciso in cui il lavoro si è
-fermato. La cartella è di sola consultazione: non modificarla.
+See `dp1/README.md` for the pipeline, the results and the exact state in which the work
+stopped. The folder is read-only: do not modify it.
 
 ---
 
-## DP2 — lavoro attivo (`dp2/`)
+## DP2 — active work (`dp2/`)
 
-Nuova iterazione sui dati DP2, con un ground truth molto più ampio: **~34.000 stelle LSST
-classificate come variabili da Gaia DR3**.
+A new iteration on DP2 data with a much larger ground truth: **~34,000 LSST stars
+classified as variable by Gaia DR3**.
 
-Cataloghi di partenza (in `dp2/catalogs/`):
+Input catalogues (in `dp2/catalogs/`, produced by `rsp/crossmatch_gaia.py`):
 
-| File | Ruolo |
+| File | Role |
 |---|---|
-| `lsst_dp2_gaia_sos.csv` | Gaia SOS — 34.553 oggetti, 11 flag `in_vari_*`; classi ad alta affidabilità, sorgente primaria |
-| `lsst_dp2_gaia_classifier_result.csv` | Gaia classifier — 33.485 oggetti con `best_class_name` / `best_class_score`; fallback per chi non ha classe SOS |
-| `class_definition.txt` | Legenda delle 24 classi del classificatore Gaia |
+| `lsst_dp2_gaia_sos.csv` | Gaia SOS — 34,553 objects, 11 `in_vari_*` flags; high-reliability classes, primary source |
+| `lsst_dp2_gaia_classifier_result.csv` | Gaia classifier — 33,485 objects with `best_class_name` / `best_class_score`; fallback for objects without an SOS class |
+| `class_definition.txt` | Legend of the 24 Gaia classifier classes |
 
-Copertura: 25.584 oggetti hanno almeno un flag SOS attivo (898 ne hanno più di uno, da
-risolvere per priorità); i restanti 8.969 possono prendere la classe dal classifier.
+Coverage: 25,584 objects have at least one SOS flag (898 have more than one, resolved by
+priority); the remaining 8,969 can take their class from the classifier.
 
-### Struttura
+### Layout
 
 ```
 dp2/
-├── main.py            entry point unico
-├── config.py          path e iperparametri — unica fonte di verità
-├── catalog.py         ground truth Gaia (SOS → classifier) + campi di cielo e fold
+├── main.py            single entry point
+├── config.py          paths and hyperparameters — the single source of truth
+├── catalog.py         Gaia ground truth (SOS → classifier) + sky fields and folds
 ├── lightcurves.py     Lomb-Scargle + phase-fold
-├── features.py        feature classiche + mappe dm–dt
-├── classify.py        classificatore a 5 classi + candidate RR, valutato su campi tenuti fuori
-├── bench/             benchmark ML (HGB) / DL (transformer) / generativo (SS-VAE)
-├── slurm/             job per Leonardo (CINECA)
-├── catalogs/          cataloghi Gaia + ground truth + periodi + feature
-└── rsp/                gira sulla Rubin Science Platform
-    ├── crossmatch_gaia.py    crossmatch Gaia DR3 × DP2 → cataloghi in catalogs/
-    └── download_lc.py        curve di luce → lightcurves/
+├── features.py        classical features + dm–dt maps
+├── classify.py        5-class classifier + RR candidates, scored on held-out fields
+├── bench/             benchmark: ML (HGB) / DL (transformer) / generative (SS-VAE)
+├── slurm/             jobs for Leonardo (CINECA)
+├── catalogs/          Gaia catalogues + ground truth + periods + features
+└── rsp/               runs on the Rubin Science Platform
+    ├── crossmatch_gaia.py    Gaia DR3 × DP2 crossmatch → catalogues in catalogs/
+    └── download_lc.py        light curves → lightcurves/
 ```
 
 ```bash
-python main.py catalog                  # ground truth Gaia + campi di cielo
+python main.py catalog                  # Gaia ground truth + sky fields
 python main.py fold --min-points 30     # Lomb-Scargle + phase-fold
-python main.py features                 # feature classiche + dm–dt
-python main.py classify                # classificatore, campi tenuti fuori
-python main.py all                      # i quattro stadi in sequenza
+python main.py features                 # classical features + dm–dt
+python main.py classify                 # classifier, held-out fields
+python main.py all                      # the four stages in order
 
-# benchmark, stesso protocollo per i tre modelli (M = hgb | transformer | vae)
-python main.py bench-cache                         # sequenze + feature sulle prime n notti
-python main.py bench --model M --step tune         # Optuna sui campi di validazione interni
-python main.py bench --model M --step eval         # test 1-2: campi tenuti fuori, prime n notti
-python main.py bench --model M --step lc           # test 3: curva di apprendimento
-python main.py bench --step report                 # tabella unica → results/bench/report.txt
+# benchmark, same protocol for the three models (M = hgb | transformer | vae)
+python main.py bench-cache                         # sequences + first-n-nights features
+python main.py bench --model M --step tune         # Optuna on inner validation fields
+python main.py bench --model M --step eval         # tests 1-2: held-out fields, first n nights
+python main.py bench --model M --step lc           # test 3: learning curve
+python main.py bench --step report                 # one table → results/bench/report.txt
 ```
 
-Lo scaricamento delle curve di luce **non** è uno stadio di `main.py`: gira su RSP,
-l'unico posto in cui esiste `lsst.rsp`.
+Downloading the light curves is **not** a `main.py` stage: it runs on RSP, the only place
+where `lsst.rsp` exists.
 
 ### Pipeline
 
 ```
-catalog   ground truth: SOS prioritario, classifier come fallback;
-          oggetti raggruppati in campi di cielo (DBSCAN), campi interi divisi in 5 fold
+catalog   ground truth: SOS first, classifier as fallback;
+          objects grouped into sky fields (DBSCAN), whole fields dealt into 5 folds
   ↓
-fold      Lomb-Scargle multibanda + phase-fold
+fold      multiband Lomb-Scargle + phase-fold
   ↓
-features  120 feature classiche (ampiezze, forma della distribuzione, Stetson, χ²,
-          Fourier, colori, periodo) + mappe dm–dt a Δt grossolano
+features  120 classical features (amplitudes, distribution shape, Stetson, χ²,
+          Fourier, colours, period) + coarse-Δt dm–dt maps
   ↓
-classify  gradient boosting a 5 classi (RR, ECL, LPV, AGN, OTHER = ogni altra
-          etichetta), valutato out-of-fold su campi mai visti. Due prodotti:
-          classe più probabile con flag di bassa confidenza, e candidate RR
-          con P(RR) sopra soglia (scelta sugli altri fold); risultati anche per
-          numero di notti osservate
+classify  5-class gradient boosting (RR, ECL, LPV, AGN, OTHER = every other
+          label), scored out-of-fold on unseen fields. Two products: the most
+          probable class with a low-confidence flag, and RR candidates with
+          P(RR) above a threshold chosen on the other folds; results are also
+          broken down by number of observing nights
 ```
 
-### Perché valutare su campi tenuti fuori, e perché le feature classiche
+### Benchmark
 
-I campi DP2 hanno cadenze e composizioni di classi molto diverse (i due campi nel piano
-galattico contengono quasi tutte le LPV, alcuni campi extragalattici quasi tutti gli AGN).
-Con uno split casuale ogni campo sta sia nel training sia nel test, e un modello può
-riconoscere il campo invece della stella: le sole feature di campionamento davano AUC-PR
-0.41 su RR vs ECL con lo split casuale e 0.13 (sotto il caso) su campi tenuti fuori.
+Every model is tuned and scored the same way (see `config.py`, "Benchmark"): Optuna on
+an inner split whose validation side is whole sky fields, objective RR AUC-PR; each outer
+fold is then predicted once per seed. No augmentation. Three tests, all on held-out
+fields:
 
-Su campi tenuti fuori (AUC-PR, RR vs ECL / RR vs resto):
+1. the tuned models, also broken down by fold, observing nights and points per night;
+2. well-sampled objects (≥ 18 nights) cut to their **first n nights** (3, 5, 10) and
+   re-measured from scratch — what early LSST data look like;
+3. a learning curve (25 / 50 / 100% of the training rows).
 
-| Ingresso | RR vs ECL | RR vs resto |
+### Why held-out fields, and why classical features
+
+DP2 fields differ widely in cadence and class mix (the two Galactic-plane fields hold
+almost all LPVs, some extragalactic fields almost all AGN). With a random split every
+field sits in both training and test, and a model can recognise the field instead of the
+star: sampling-only features gave AUC-PR 0.41 for RR vs ECL under a random split and 0.13
+(below chance) on held-out fields.
+
+On held-out fields (AUC-PR, RR vs ECL / RR vs rest):
+
+| Input | RR vs ECL | RR vs rest |
 |---|---|---|
-| latente SS-VAE, riaddestrato per fold (vecchio ramo, sostituito da `bench/vae.py`) | 0.24 | 0.32 |
-| mappe dm–dt | 0.70 | 0.63 |
-| feature classiche | 0.83 | 0.70 |
-| **feature classiche + dm–dt** | **0.85** | **0.74** |
+| SS-VAE latent, retrained per fold (old branch, replaced by `bench/vae.py`) | 0.24 | 0.32 |
+| dm–dt maps | 0.70 | 0.63 |
+| classical features | 0.83 | 0.70 |
+| **classical features + dm–dt** | **0.85** | **0.74** |
 
-La classe OTHER serve perché nel catalogo vero ci sono anche le altre classi: senza,
-finivano quasi tutte in ECL (precisione ECL 0.50) e 236 in RR. Con OTHER la precisione
-sale a 0.79 (ECL) e 0.73 (RR), e P(RR) del modello a 5 classi batte un binario RR vs resto
-dedicato (AUC-PR 0.80 contro 0.75). Una testa per ogni classe con ≥100 etichette peggiora
-invece le RR (0.73): RS, YSO, ELL e CV hanno etichette solo dal classificatore Gaia.
+The OTHER class is needed because the real catalogue holds the other classes too: without
+it they almost all ended up as ECL (ECL precision 0.50) and 236 as RR. With OTHER,
+precision rises to 0.79 (ECL) and 0.73 (RR), and P(RR) from the 5-class model beats a
+dedicated RR-vs-rest binary (AUC-PR 0.80 vs 0.75). One head per class with ≥ 100 labels
+instead hurts RR (0.73): RS, YSO, ELL and CV labels come only from the Gaia classifier.
 
-Il latente dipende dalla curva piegata, ma con il campionamento DP2 il periodo
-Lomb-Scargle è corretto solo per ~30% delle RR: su campi con poche notti la curva piegata
-è rumore e la rappresentazione non si trasferisce. Le feature classiche e dm–dt usano
-informazioni che non richiedono il periodo giusto.
+The latent depends on the folded curve, but with DP2 sampling the Lomb-Scargle period is
+right for only ~30% of RR Lyrae: in fields with few nights the folded curve is noise and
+the representation does not transfer. Classical and dm–dt features carry information that
+does not need the right period.
 
 ## Setup
 
@@ -142,20 +152,20 @@ informazioni che non richiedono il periodo giusto.
 pip install -r requirements.txt
 ```
 
-Training su GPU NVIDIA (CUDA). Il phase-folding e Lomb-Scargle usano multiprocessing su CPU.
+Training on NVIDIA GPUs (CUDA). Phase-folding and Lomb-Scargle use CPU multiprocessing.
 
 ---
 
-## Note sui dati
+## Data
 
-Nessun dato è versionato (vedi `.gitignore`): curve di luce, fold, periodi, feature,
-cataloghi, modelli e risultati restano fuori dal repository. I dati DP2 sono soggetti ai
-diritti di accesso Rubin, quindi "riproducibile" significa: rilanciabile da chi ha accesso
-a DP2 sulla Rubin Science Platform, nell'ordine
+No data are versioned (see `.gitignore`): light curves, folds, periods, features,
+catalogues, models and results stay out of the repository. DP2 data are subject to Rubin
+data rights, so "reproducible" means: rerunnable by anyone with DP2 access on the Rubin
+Science Platform, in the order
 
-    rsp/crossmatch_gaia.py → rsp/download_lc.py      (su RSP)
+    rsp/crossmatch_gaia.py → rsp/download_lc.py      (on RSP)
     main.py all → main.py bench-cache → main.py bench ...
 
-Ogni risultato del benchmark salva commit git, impronte dei file di input e versioni dei
-pacchetti (`results/bench/<modello>/meta_*.json`). `_admin/` contiene materiale non
-attinente al progetto ed è esclusa dal versionamento.
+Every benchmark result stores the git commit, fingerprints of its input files and the
+package versions (`results/bench/<model>/meta_*.json`). `_admin/` holds material unrelated
+to the project and is excluded from version control.

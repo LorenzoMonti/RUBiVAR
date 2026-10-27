@@ -1,8 +1,8 @@
-# RUBiVAR — dipendenze Python
-# Testato su Python 3.10+
+# RUBiVAR — Python dependencies
+# Tested on Python 3.10+
 
 # Deep learning
-torch>=2.0.0          # CUDA opzionale, testato con cu126
+torch>=2.0.0          # CUDA optional, tested with cu126
 
 # Scientific computing
 numpy>=1.24
@@ -14,13 +14,13 @@ astropy>=5.3
 scikit-learn>=1.3
 optuna>=5.0          # benchmark hyperparameter search (dp2/bench)
 
-# Visualizzazione
+# Plotting
 matplotlib>=3.7
 
 # Utilities
 tqdm>=4.65
 
-# Installazione
+# Installation
 # pip install torch --index-url https://download.pytorch.org/whl/cu126   # GPU
 # pip install torch                                                        # CPU only
 # pip install numpy scipy pandas astropy scikit-learn matplotlib tqdm optuna

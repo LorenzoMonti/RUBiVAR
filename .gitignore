@@ -243,4 +243,5 @@ gaia_periods.csv
 # ── Local / third-party material ──────────────────────────────────────────────
 /*.pdf
 logs/
+gh_*
 .claude/
