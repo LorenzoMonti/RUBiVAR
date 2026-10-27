@@ -27,18 +27,22 @@ RANDOM_SEED = 42
 
 # ── Sky fields: the evaluation unit ───────────────────────────────────────────
 #
-# DP2 observes a handful of pointings, each with its own cadence and its own class
-# mix (two Galactic-plane fields hold almost every LPV, a few extragalactic ones
-# almost every AGN). With a random split every field sits on both sides, and a model
+# Our objects sit in a handful of separate sky regions, each with its own cadence and
+# class mix (two Galactic-plane fields hold almost every LPV, a few extragalactic
+# ones almost every AGN). With a random split every field sits on both sides, and a model
 # can score by recognising the field instead of the star: sampling-only features
 # reached AUC-PR 0.41 for RR vs ECL under a random split and 0.13, below chance,
 # once whole fields were held out.
 #
-# Objects are grouped into fields by DBSCAN on the sky, and whole fields are dealt
-# into N_FIELD_FOLDS folds (GroupKFold over trusted labels). Every classifier is
-# scored out-of-fold on fields it never saw: that is the number to quote.
-FIELD_EPS_DEG     = 1.0   # neighbourhood radius; DP2 pointings are ~3.5 deg across
-FIELD_MIN_SAMPLES = 20
+# A field is a set of objects linked by shared visits: two objects observed in the
+# same exposure are in the same pointing, and chains of shared visits join
+# overlapping pointings (connected components of the object-visit graph). dp2.Visit
+# carries no target or field name, so this is the closest thing to an official field.
+# DBSCAN on positions (1 deg) agreed on every isolated field but cut one wide strip
+# (RA 283-342, 3,518 objects, all sharing visits) into 7 pieces spread over 3 folds,
+# leaking the same pointing into training and test. Whole fields are dealt into
+# N_FIELD_FOLDS folds (GroupKFold over trusted labels). Every classifier is scored
+# out-of-fold on fields it never saw: that is the number to quote.
 N_FIELD_FOLDS     = 5
 
 
@@ -214,11 +218,14 @@ NIGHT_BINS = [0, 9, 18, 24]
 # ── Benchmark: ML vs DL vs generative (bench/) ────────────────────────────────
 #
 # Every model is tuned and scored the same way. Per outer field fold k: Optuna
-# (BENCH_TRIALS trials, seeded) on an inner split of the other folds whose validation
-# side is whole FIELDS (~BENCH_VAL_FRAC of the labels); objective = RR AUC-PR on the
-# validation curves. Fold k is then predicted once per seed in BENCH_SEEDS. GPU models
-# are not bit-reproducible (bf16, atomic adds), hence several seeds. No augmentation,
-# so no model has seen a cut curve before the few-nights test.
+# (BENCH_TRIALS trials, seeded, the first one the model's untuned defaults) on
+# BENCH_INNER inner splits of the other folds, whose validation sides are disjoint
+# groups of whole FIELDS; objective = RR AUC-PR over the pooled validation
+# predictions. A single validation split chose configurations that generalised worse
+# than the defaults (transformer 0.47 tuned vs 0.59 untuned on held-out fields).
+# Fold k is then predicted once per seed in BENCH_SEEDS. GPU models are not
+# bit-reproducible (bf16, atomic adds), hence several seeds. No augmentation, so no
+# model has seen a cut curve before the few-nights test.
 #
 # Three tests, all on held-out fields:
 #   1. the models as tuned (also split by fold, nights and points per night)
@@ -226,11 +233,14 @@ NIGHT_BINS = [0, 9, 18, 24]
 #      n nights, n in DEG_LEVELS, everything re-measured (LS period included) — what
 #      early LSST data look like. Random nights instead would keep the full baseline.
 #   3. learning curve: inner training subsampled to LC_FRACTIONS, best params, one seed
-# On DP2, real few-night curves carry 30-75 points per night (vs ~7 for well-sampled
-# ones), so nights alone are a poor proxy for the information in a curve.
+# Real few-night DP2 curves carry 30-75 points per night (vs ~7 for well-sampled
+# ones), but points per night are tied to the field too, so neither axis alone
+# measures the information in a curve.
 BENCH_DIR        = os.path.join(RESULTS_DIR, "bench")
 FEATURES_DEG_NPZ = os.path.join(CATALOG_DIR, "features_degraded.npz")
-BENCH_VAL_FRAC = 0.12
+BENCH_INNER    = 3
+BENCH_VAL_MAX  = 0.25   # fields above this share of the training rows (the bulge)
+                        # are never validation
 BENCH_TRIALS   = 30
 BENCH_SEEDS    = [0, 1, 2]
 DEG_LEVELS     = [3, 5, 10]

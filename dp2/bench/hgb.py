@@ -12,6 +12,8 @@ from bench import degrade
 NAME = "hgb"
 USES_VAL = False
 _DEG = None   # few-nights features, loaded on first use
+DEFAULT = {"learning_rate": 0.05, "max_iter": 300, "max_leaf_nodes": 31, "min_samples_leaf": 20,
+           "l2_regularization": 1e-4, "max_features": 1.0}   # ~sklearn defaults, as classify.py
 
 
 def space(trial):

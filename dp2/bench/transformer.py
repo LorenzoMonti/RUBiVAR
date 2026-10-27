@@ -20,6 +20,7 @@ NAME = "transformer"
 USES_VAL = True
 EPOCHS, PATIENCE, WORKERS = 30, 6, 8
 _CACHE = None
+DEFAULT = {"d": 128, "layers": 4, "lr": 5e-4, "wd": 0.01, "dropout": 0.1, "batch": 64}
 
 
 def _cache():

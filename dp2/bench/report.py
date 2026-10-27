@@ -65,7 +65,7 @@ def report(names, reference="hgb"):
              for g, r in groups if len(r)}
         lines += [f"   by {title} (RR AUC-PR / bal_acc)", pd.DataFrame(t).T.to_string(), ""]
 
-    if reference in mean:
+    if reference in mean and len(mean) > 1:
         lines.append(f"   paired field bootstrap, metric(model) - metric({reference}):")
         for n in names:
             if n != reference:

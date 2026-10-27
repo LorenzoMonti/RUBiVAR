@@ -54,25 +54,26 @@ def outer_split(d, k):
     return np.where(d.lab & (d.folds != k))[0], np.where(d.lab & (d.folds == k))[0]
 
 
-def inner_split(d, k):
+def inner_splits(d, k):
     """
-    The training rows of fold k split into (inner train, inner validation), the latter
-    whole fields worth ~C.BENCH_VAL_FRAC of them. Fields that alone would overshoot by
-    half are skipped: a bulge field holds ~40% of a fold's training labels.
+    C.BENCH_INNER (inner train, inner validation) splits of fold k's training rows. The
+    fields of at most C.BENCH_VAL_MAX of those rows are dealt into C.BENCH_INNER
+    groups balanced on labels (GroupKFold); each group is the validation side once, so
+    every such field is validated exactly once. Larger fields (the bulge, ~half of a
+    fold's training labels) always stay in training.
     """
+    from sklearn.model_selection import GroupKFold
     rows = outer_split(d, k)[0]
-    rng = np.random.default_rng(C.RANDOM_SEED + k)
-    target, chosen, n = C.BENCH_VAL_FRAC * len(rows), [], 0
-    for f in rng.permutation(np.unique(d.fields[rows])):
-        if n >= target:
-            break
-        size = int((d.fields[rows] == f).sum())
-        if n + size > 1.5 * target:
-            continue
-        chosen.append(f)
-        n += size
-    val = np.isin(d.fields[rows], chosen)
-    return rows[~val], rows[val]
+    fields, size = np.unique(d.fields[rows], return_counts=True)
+    small = np.isin(d.fields[rows], fields[size <= C.BENCH_VAL_MAX * len(rows)])
+    cand = rows[small]
+    return [(np.setdiff1d(rows, cand[va]), cand[va])
+            for _, va in GroupKFold(C.BENCH_INNER).split(cand, groups=d.fields[cand])]
+
+
+def inner_split(d, k):
+    """The first inner split: early stopping for the final fit of sequence models."""
+    return inner_splits(d, k)[0]
 
 
 def night_of(t):

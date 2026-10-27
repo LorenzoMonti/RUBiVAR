@@ -58,7 +58,7 @@ priority); the remaining 8,969 can take their class from the classifier.
 dp2/
 ├── main.py            single entry point
 ├── config.py          paths and hyperparameters — the single source of truth
-├── catalog.py         Gaia ground truth (SOS → classifier) + sky fields and folds
+├── catalog.py         Gaia ground truth (SOS → classifier) + sky fields (shared visits) and folds
 ├── lightcurves.py     Lomb-Scargle + phase-fold
 ├── features.py        classical features + dm–dt maps
 ├── classify.py        5-class classifier + RR candidates, scored on held-out fields
@@ -67,15 +67,18 @@ dp2/
 ├── catalogs/          Gaia catalogues + ground truth + periods + features
 └── rsp/               runs on the Rubin Science Platform
     ├── crossmatch_gaia.py    Gaia DR3 × DP2 crossmatch → catalogues in catalogs/
-    └── download_lc.py        light curves → lightcurves/
+    ├── download_lc.py        light curves → lightcurves/
+    └── download_visits.py    dp2.Visit metadata → catalogs/ (field descriptions)
 ```
 
 ```bash
-python main.py catalog                  # Gaia ground truth + sky fields
+python main.py catalog                  # Gaia ground truth
+                                        # (then download the light curves on RSP)
+python main.py fields                   # sky fields from shared visits + 5 field folds
 python main.py fold --min-points 30     # Lomb-Scargle + phase-fold
 python main.py features                 # classical features + dm–dt
 python main.py classify                 # classifier, held-out fields
-python main.py all                      # the four stages in order
+python main.py all                      # the five stages in order
 
 # benchmark, same protocol for the three models (M = hgb | transformer | vae)
 python main.py bench-cache                         # sequences + first-n-nights features
@@ -91,8 +94,10 @@ where `lsst.rsp` exists.
 ### Pipeline
 
 ```
-catalog   ground truth: SOS first, classifier as fallback;
-          objects grouped into sky fields (DBSCAN), whole fields dealt into 5 folds
+catalog   ground truth: SOS first, classifier as fallback
+  ↓
+fields    objects linked by shared visits form a sky field (18 fields);
+          whole fields dealt into 5 folds
   ↓
 fold      multiband Lomb-Scargle + phase-fold
   ↓
@@ -109,8 +114,9 @@ classify  5-class gradient boosting (RR, ECL, LPV, AGN, OTHER = every other
 ### Benchmark
 
 Every model is tuned and scored the same way (see `config.py`, "Benchmark"): Optuna on
-an inner split whose validation side is whole sky fields, objective RR AUC-PR; each outer
-fold is then predicted once per seed. No augmentation. Three tests, all on held-out
+three inner splits whose validation sides are disjoint groups of whole sky fields,
+objective RR AUC-PR on the pooled validation predictions, first trial = the untuned
+defaults; each outer fold is then predicted once per seed. No augmentation. Three tests, all on held-out
 fields:
 
 1. the tuned models, also broken down by fold, observing nights and points per night;
@@ -125,6 +131,10 @@ almost all LPVs, some extragalactic fields almost all AGN). With a random split 
 field sits in both training and test, and a model can recognise the field instead of the
 star: sampling-only features gave AUC-PR 0.41 for RR vs ECL under a random split and 0.13
 (below chance) on held-out fields.
+
+A field is a set of objects linked by shared visits (`dp2.Visit` has no target or field
+name). DBSCAN on positions agreed on every isolated field but cut one wide strip
+(RA 283–342°, 3,518 objects sharing visits) into 7 pieces spread over 3 folds.
 
 On held-out fields (AUC-PR, RR vs ECL / RR vs rest):
 

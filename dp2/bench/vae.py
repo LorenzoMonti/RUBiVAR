@@ -29,6 +29,8 @@ EPOCHS, BATCH = 100, 256
 BETA_WARM, LAMBDA_WARM = 0.25, 0.4   # fractions of EPOCHS: KL warm-up, then SupCon's
 TAB_DIM = len(degrade.TAB_COLUMNS) + 1
 _IN = None
+DEFAULT = {"latent_dim": 32, "lr": 1e-3, "beta_max": 1.0, "lambda_max": 10.0, "temp": 0.07,
+           "C": 1.0}   # the settings of the first SS-VAE
 
 
 # ── Model ─────────────────────────────────────────────────────────────────────
@@ -184,7 +186,7 @@ def space(trial):
             "lr": trial.suggest_float("lr", 3e-4, 3e-3, log=True),
             "beta_max": trial.suggest_float("beta_max", 0.1, 1.0, log=True),
             "lambda_max": trial.suggest_float("lambda_max", 1.0, 30.0, log=True),
-            "temp": trial.suggest_categorical("temp", [0.05, 0.1, 0.2]),
+            "temp": trial.suggest_categorical("temp", [0.05, 0.07, 0.1, 0.2]),
             "C": trial.suggest_float("C", 1e-2, 10.0, log=True)}
 
 

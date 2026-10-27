@@ -10,9 +10,12 @@ Output rows are ordered SOS block first, then classifier, then unlabelled; withi
 block by descending r_var_significance (objects with no value sort last).
 """
 
+import os
+
 import numpy as np
 import pandas as pd
-from sklearn.cluster import DBSCAN
+from scipy.sparse import coo_matrix
+from scipy.sparse.csgraph import connected_components
 from sklearn.model_selection import GroupKFold
 
 import config as C
@@ -96,7 +99,6 @@ def build(min_clf_score=None):
         ["_order", "r_var_significance"], ascending=[True, False], kind="mergesort"
     ).drop(columns="_order")
 
-    cat = assign_fields(cat)
 
     cols = [
         "diaObjectId", "source_id", "label", "label_source", "label_score",
@@ -123,27 +125,62 @@ def build(min_clf_score=None):
     return cat
 
 
+def _visits(oid):
+    path = os.path.join(C.LC_DIR, f"lc_{oid}.csv")
+    if not os.path.exists(path):
+        return np.zeros(0, np.int64)
+    return np.unique(pd.read_csv(path, usecols=["visit"])["visit"].dropna().astype(np.int64))
+
+
+def visit_fields(ids):
+    """
+    Field of each object: connected components of the graph linking objects to the
+    visits they were observed in (see config, "Sky fields"). -1 without a light curve.
+    """
+    from multiprocessing import Pool, cpu_count
+    with Pool(max(1, cpu_count() - 1)) as pool:
+        vis = pool.map(_visits, ids, chunksize=64)
+    rows = np.repeat(np.arange(len(ids)), [len(v) for v in vis])
+    _, cols = np.unique(np.concatenate(vis), return_inverse=True)
+    n = len(ids) + cols.max() + 1
+    graph = coo_matrix((np.ones(len(rows)), (rows, cols + len(ids))), shape=(n, n))
+    comp = connected_components(graph, directed=False)[1][:len(ids)]
+    field = pd.factorize(comp)[0]
+    field[[len(v) == 0 for v in vis]] = -1
+    return field
+
+
+def build_fields():
+    """
+    Add `field` / `field_fold` to the labelled catalog. A stage of its own because the
+    fields come from the visits, i.e. from the light curves downloaded for this
+    catalog's objects (rsp/download_lc.py).
+    """
+    cat = assign_fields(load())
+    cat.to_csv(C.LABELED_CSV, index=False)
+    print(f"Saved → {C.LABELED_CSV}")
+    return cat
+
+
 def assign_fields(cat):
     """
     Group objects into sky fields and deal whole fields into C.N_FIELD_FOLDS folds.
 
     Folds are balanced on trusted labels (GroupKFold); unlabelled objects inherit the
-    fold of their field. DBSCAN noise (field -1) is one more group. Written into the
-    catalog as `field` / `field_fold` so every stage holds out the same fields.
+    fold of their field. Written into the catalog as `field` / `field_fold` so every
+    stage holds out the same fields. Needs the light curves (for the visit ids).
     """
-    xy = np.radians(cat[["dec_lsst", "ra_lsst"]].to_numpy())
-    field = DBSCAN(eps=np.radians(C.FIELD_EPS_DEG), min_samples=C.FIELD_MIN_SAMPLES,
-                   metric="haversine").fit_predict(xy)
+    field = visit_fields(cat["diaObjectId"].to_numpy())
 
     lab = np.where(cat["label"].notna().to_numpy()
-                   & trusted(cat["label"], cat["label_source"]))[0]
+                   & trusted(cat["label"], cat["label_source"]) & (field >= 0))[0]
     fold_of_field = {}
     for k, (_, te) in enumerate(GroupKFold(C.N_FIELD_FOLDS).split(lab, groups=field[lab])):
         fold_of_field.update({f: k for f in np.unique(field[lab[te]])})
     cat["field"] = field
     cat["field_fold"] = [fold_of_field.get(f, -1) for f in field]
 
-    print(f"\nSky fields: {len(set(field) - {-1})} (+ noise), "
+    print(f"\nSky fields: {len(set(field) - {-1})} (objects sharing visits), "
           f"{C.N_FIELD_FOLDS} folds of whole fields")
     t = cat.iloc[lab]
     print(pd.crosstab(t["field_fold"], t["label"])

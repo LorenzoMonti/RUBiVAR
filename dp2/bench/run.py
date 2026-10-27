@@ -3,6 +3,7 @@ Tuning and scoring, the same for every model.
 
 A model module provides
     NAME                    output folder under C.BENCH_DIR
+    DEFAULT                 untuned params, the first trial of every study
     USES_VAL                True if training needs the validation rows (early stopping);
                             otherwise the final fit takes all of fold k's training rows
     space(trial)            Optuna search space → params dict
@@ -12,7 +13,7 @@ A model module provides
     embed(model, d, rows)             optional: the model's representation of the rows,
                                       saved for seed 0 (latent figures, period probe)
 
-    tune(module, k)            Optuna on fold k's inner split; resumable, one journal
+    tune(module, k)            Optuna on fold k's inner splits; resumable, one journal
                                per fold, so folds can run as parallel jobs
     evaluate(module)           tests 1-2: best params → fold k, once per C.BENCH_SEEDS
     learning_curve(module)     test 3
@@ -42,27 +43,39 @@ def _study(module, k):
 
 
 def tune(module, k, n_trials=C.BENCH_TRIALS):
-    """Run trials on fold k until n_trials are complete (earlier runs count)."""
+    """
+    Run trials on fold k until n_trials are complete (earlier runs count). Each trial
+    trains once per inner split; the objective is RR AUC-PR over the pooled validation
+    predictions (every validation object predicted once). Trial 0 is module.DEFAULT,
+    so tuning starts from the untuned model.
+    """
     d = protocol.load()
-    tr, va = protocol.inner_split(d, k)
+    splits = protocol.inner_splits(d, k)
     rr = d.cls.index(C.POSITIVE_CLASS)
+    va_all = np.concatenate([va for _, va in splits])
     study = _study(module, k)
     done = sum(t.state == optuna.trial.TrialState.COMPLETE for t in study.trials)
-    print(f"[{module.NAME} fold {k}] inner train {len(tr):,}  val {len(va):,} "
-          f"(RR {int((d.y[va] == rr).sum())}, {len(np.unique(d.fields[va]))} fields)  "
-          f"trials done {done}/{n_trials}", flush=True)
+    print(f"[{module.NAME} fold {k}] {len(splits)} inner splits, validation "
+          + ", ".join(f"{len(va):,}" for _, va in splits)
+          + f" (RR {int((d.y[va_all] == rr).sum())}, {len(np.unique(d.fields[va_all]))} fields)"
+          + f"  trials done {done}/{n_trials}", flush=True)
+    if not study.trials:
+        study.enqueue_trial(module.DEFAULT)
 
     def objective(trial):
         t0 = time.time()
-        model = module.train(d, tr, va, module.space(trial), C.RANDOM_SEED)
-        ap = average_precision_score(d.y[va] == rr, module.predict(model, d, va)[:, rr])
+        params = module.space(trial)
+        p = np.concatenate([module.predict(module.train(d, tr, va, params, C.RANDOM_SEED), d, va)
+                            for tr, va in splits])
+        ap = average_precision_score(d.y[va_all] == rr, p[:, rr])
         print(f"[{module.NAME} fold {k}] trial {trial.number:3d}  RR AP {ap:.3f}  "
               f"({time.time() - t0:.0f}s)  {trial.params}", flush=True)
         return ap
 
     if done < n_trials:
         study.optimize(objective, n_trials=n_trials - done)
-    print(f"[{module.NAME} fold {k}] best RR AP {study.best_value:.3f}  {study.best_params}")
+    print(f"[{module.NAME} fold {k}] best RR AP {study.best_value:.3f}  {study.best_params}"
+          f"  (default: {study.trials[0].value:.3f})")
     return study.best_params
 
 
@@ -147,7 +160,7 @@ def _merge(name, prefix, n_obj, n_cls, n_deg=0):
             return None
         a = np.load(path)
         prob[a["rows"]] = a["prob"]
-        if "deg_idx" in a.files:
+        if n_deg:     # the learning curve has no first-n-nights predictions
             deg[a["deg_idx"]] = a["deg_prob"]
     return prob, deg
 

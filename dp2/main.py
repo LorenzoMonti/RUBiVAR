@@ -1,11 +1,13 @@
 """
 RUBiVAR DP2 — single entry point.
 
-    python main.py catalog                 build the Gaia ground truth + sky-field folds
+    python main.py catalog                 build the Gaia ground truth
+    (download the light curves on RSP: rsp/download_lc.py)
+    python main.py fields                  sky fields from shared visits + field folds
     python main.py fold  [--min-points N]  Lomb-Scargle + phase-fold
     python main.py features                classical features + dm-dt maps
     python main.py classify                5-class classifier + RR candidates, held-out fields
-    python main.py all                     the four stages above, in order
+    python main.py all                     the five stages above, in order
 
 Benchmark ML / DL / generative, same protocol for every model (see bench/):
 
@@ -35,6 +37,12 @@ def stage_catalog(args):
     import catalog
     _banner("CATALOG — Gaia ground truth")
     catalog.build(min_clf_score=args.min_score)
+
+
+def stage_fields(args):
+    import catalog
+    _banner("FIELDS — objects sharing visits, field folds")
+    catalog.build_fields()
 
 
 def stage_fold(args):
@@ -90,6 +98,7 @@ def stage_bench(args):
 
 def stage_all(args):
     stage_catalog(args)
+    stage_fields(args)
     stage_fold(args)
     stage_features(args)
     stage_classify(args)
@@ -105,6 +114,9 @@ def build_parser():
     c.add_argument("--min-score", type=float, default=None,
                    help="minimum Gaia classifier score for fallback labels")
     c.set_defaults(func=stage_catalog)
+
+    fl = sub.add_parser("fields", help="sky fields from shared visits + field folds")
+    fl.set_defaults(func=stage_fields)
 
     f = sub.add_parser("fold", help="Lomb-Scargle + phase-fold")
     f.add_argument("--min-points", type=int, default=None,
@@ -134,7 +146,7 @@ def build_parser():
     b.add_argument("--seeds", type=int, nargs="+", default=None, help="default C.BENCH_SEEDS")
     b.set_defaults(func=stage_bench)
 
-    a = sub.add_parser("all", help="catalog → fold → features → classify")
+    a = sub.add_parser("all", help="catalog → fields → fold → features → classify")
     a.add_argument("--min-score", type=float, default=None)
     a.add_argument("--min-points", type=int, default=None)
     a.add_argument("--min-per-band", type=int, default=None)
