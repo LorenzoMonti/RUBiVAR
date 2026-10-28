@@ -8,6 +8,7 @@ RUBiVAR DP2 — single entry point.
     python main.py features                classical features + dm-dt maps
     python main.py classify                5-class classifier + RR candidates, held-out fields
     python main.py all                     the five stages above, in order
+    python main.py period-check            LS period of the RR vs Gaia DR3, by nights
 
 Benchmark ML / DL / generative, same protocol for every model (see bench/):
 
@@ -15,7 +16,8 @@ Benchmark ML / DL / generative, same protocol for every model (see bench/):
     python main.py bench --model M --step tune [--folds 0 1] [--trials N]
     python main.py bench --model M --step eval [--seeds 0]   tests 1-2, held-out folds
     python main.py bench --model M --step lc                 test 3, learning curve
-    python main.py bench --step report [--model M ...]
+    python main.py bench --step report [--model M ...] [--out report.txt]
+    python main.py bench --step figures [--model M ...] [--out figures]
 
 Downloading the light curves is NOT a stage here: it runs on the Rubin Science
 Platform, which is the only place `lsst.rsp` exists. See rsp/download_lc.py.
@@ -78,10 +80,15 @@ def stage_bench(args):
     import importlib
     import config as C
     from bench import report, run
-    if args.step == "report":
-        _banner("BENCH — report")
-        report.report(args.model or [m for m in BENCH_MODELS
-                                     if os.path.isdir(os.path.join(C.BENCH_DIR, m))])
+    if args.step in ("report", "figures"):
+        names = args.model or [m for m in BENCH_MODELS
+                               if os.path.isdir(os.path.join(C.BENCH_DIR, m))]
+        _banner(f"BENCH — {args.step}")
+        if args.step == "report":
+            report.report(names, out=args.out or "report.txt")
+        else:
+            from bench import figures
+            figures.figures(names, out=args.out or "figures")
         return
     if not args.model or len(args.model) != 1:
         raise ValueError("--step tune / eval takes exactly one --model")
@@ -94,6 +101,12 @@ def stage_bench(args):
         run.evaluate(module, seeds=args.seeds or C.BENCH_SEEDS, folds=args.folds)
     else:
         run.learning_curve(module, folds=args.folds)
+
+
+def stage_period_check(args):
+    import period_check
+    _banner("PERIOD-CHECK — LS period vs Gaia DR3")
+    period_check.run()
 
 
 def stage_all(args):
@@ -135,15 +148,20 @@ def build_parser():
     k.add_argument("--no-plot", action="store_true")
     k.set_defaults(func=stage_classify)
 
+    pc = sub.add_parser("period-check", help="LS period of the RR vs Gaia DR3, by nights")
+    pc.set_defaults(func=stage_period_check)
+
     bc = sub.add_parser("bench-cache", help="night-cut feature caches for the benchmark")
     bc.set_defaults(func=stage_bench_cache)
 
     b = sub.add_parser("bench", help="tune / score / report the benchmarked models")
     b.add_argument("--model", nargs="+", choices=BENCH_MODELS)
-    b.add_argument("--step", choices=["tune", "eval", "lc", "report"], required=True)
+    b.add_argument("--step", choices=["tune", "eval", "lc", "report", "figures"], required=True)
     b.add_argument("--folds", type=int, nargs="+", default=[0, 1, 2, 3, 4])
     b.add_argument("--trials", type=int, default=None, help="default C.BENCH_TRIALS")
     b.add_argument("--seeds", type=int, nargs="+", default=None, help="default C.BENCH_SEEDS")
+    b.add_argument("--out", default=None,
+                   help="report file / figure folder in C.BENCH_DIR (report.txt / figures)")
     b.set_defaults(func=stage_bench)
 
     a = sub.add_parser("all", help="catalog → fields → fold → features → classify")

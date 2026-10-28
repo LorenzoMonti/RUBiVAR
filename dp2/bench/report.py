@@ -2,8 +2,9 @@
 Benchmark report: every scored model under the same protocol (see config, "Benchmark").
 
   1. held-out fields: mean ± std over seeds; by fold, observing nights and points per
-     night on the seed-averaged probabilities; paired field bootstrap vs the reference
-  2. the same objects (>= C.DEG_MIN_NIGHTS nights) cut to their first n nights
+     night on the seed-averaged probabilities; paired field bootstrap of every pair
+  2. the same objects (>= C.DEG_MIN_NIGHTS nights) cut to their first n nights, with the
+     same bootstrap at each cut
   3. learning curve: fraction of the training rows → held-out RR AUC-PR / bal_acc
 """
 
@@ -28,7 +29,18 @@ def _points_per_night(d):
     return (per["n_points"] / per["n_nights"].clip(lower=1)).to_numpy()
 
 
-def report(names, reference="hgb"):
+def _bootstrap(names, y, probs, fields, cls):
+    """Paired field bootstrap of every pair, metric(later in names) - metric(earlier)."""
+    out = []
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            res = protocol.field_bootstrap(y, probs[a], probs[b], fields, cls)
+            out += [f"     {b} - {a}".ljust(36) + f"{k:<10} {m:+.3f}  95% [{lo:+.3f}, {hi:+.3f}]"
+                    for k, (m, lo, hi) in res.items()]
+    return out
+
+
+def report(names, out="report.txt"):
     d = protocol.load()
     rows = np.where(d.lab)[0]
     y, cls = d.y, d.cls
@@ -65,15 +77,10 @@ def report(names, reference="hgb"):
              for g, r in groups if len(r)}
         lines += [f"   by {title} (RR AUC-PR / bal_acc)", pd.DataFrame(t).T.to_string(), ""]
 
-    if reference in mean and len(mean) > 1:
-        lines.append(f"   paired field bootstrap, metric(model) - metric({reference}):")
-        for n in names:
-            if n != reference:
-                b = protocol.field_bootstrap(y[rows], mean[reference][0][rows],
-                                             mean[n][0][rows], d.fields[rows], cls)
-                lines += [f"     {n:<12} {k:<10} {m:+.3f}  95% [{lo:+.3f}, {hi:+.3f}]"
-                          for k, (m, lo, hi) in b.items()]
-        lines.append("")
+    if len(names) > 1:
+        lines += ["   paired field bootstrap (seed-averaged probabilities):",
+                  *_bootstrap(names, y[rows], {n: p[rows] for n, (p, _) in mean.items()},
+                              d.fields[rows], cls), ""]
 
     # 2. first n nights
     base = np.unique(deg_rows)
@@ -86,6 +93,12 @@ def report(names, reference="hgb"):
     lines += [f"2. The same {len(base):,} objects (>= {C.DEG_MIN_NIGHTS} nights, "
               f"RR {int((y[base] == rr).sum())}) cut to their first n nights "
               f"(RR AUC-PR / bal_acc)", pd.DataFrame(t).T.to_string(), ""]
+    if len(names) > 1:
+        for lev in sorted(C.DEG_LEVELS, reverse=True):
+            i = np.where(deg_n == lev)[0]
+            lines += [f"   paired field bootstrap, first {lev} nights:",
+                      *_bootstrap(names, y[deg_rows[i]], {n: q[i] for n, (_, q) in mean.items()},
+                                  d.fields[deg_rows[i]], cls), ""]
 
     # 3. learning curve
     t = {}
@@ -97,5 +110,5 @@ def report(names, reference="hgb"):
 
     text = "\n".join(lines)
     print(text)
-    with open(os.path.join(C.BENCH_DIR, "report.txt"), "w") as fh:
+    with open(os.path.join(C.BENCH_DIR, out), "w") as fh:
         fh.write(text)

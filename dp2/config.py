@@ -21,6 +21,7 @@ CLF_CSV       = os.path.join(CATALOG_DIR, "lsst_dp2_gaia_classifier_result.csv")
 CLASS_DEF_TXT = os.path.join(CATALOG_DIR, "class_definition.txt")
 LABELED_CSV   = os.path.join(CATALOG_DIR, "dp2_labeled_catalog.csv")
 PERIODS_CSV   = os.path.join(CATALOG_DIR, "periods.csv")
+GAIA_RR_PERIODS_CSV = os.path.join(CATALOG_DIR, "gaia_rr_periods.csv")   # period_check.py
 FEATURES_NPZ  = os.path.join(CATALOG_DIR, "features.npz")
 
 RANDOM_SEED = 42
